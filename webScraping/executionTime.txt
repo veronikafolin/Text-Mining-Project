@@ -1,0 +1,4 @@
+EXECUTION TIME
+train set: 55 minutes per shard (20 shard)
+validation set: 3593.793037891388 seconds (59,896550631523133745 minutes)
+test set: 3573.108875274658 seconds (59,551814587910968157 minutes)
