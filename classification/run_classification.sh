@@ -1,0 +1,33 @@
+#!/bin/bash
+
+python run_classification.py \
+  --do_train \
+  --do_eval \
+  --do_predict \
+  --task_name ruling_classification \
+  --model_name_or_path facebook/mbart-large-50 \
+  --dataset_name_local ../datasets/COMMA  \
+  --log_level error \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --gradient_accumulation_steps 1 \
+  --max_seq_length 1024 \
+  --learning_rate 5e-5 \
+  --num_train_epochs 10 \
+  --save_strategy epoch \
+  --evaluation_strategy epoch \
+  --fp16 \
+  --gradient_checkpointing \
+  --load_best_model_at_end \
+  --overwrite_output_dir \
+  --overwrite_cache \
+  --max_eval_samples 200 \
+  --save_total_limit 1 \
+  --weight_decay 0.01 \
+  --label_smoothing_factor 0.1 \
+  --max_train_samples 10 \
+  --max_eval_samples 10 \
+  --max_predict_samples 10 \
+  --remove_unused_columns \
+  --report_to wandb \
+  --auto_find_batch_size
