@@ -141,6 +141,8 @@ python3 tasks/run_classification.py \
   --per_device_eval_batch_size 2 \
 ```
 
+## Risultati
+
 Di seguito vengono riportati i risultati ottenuti per la lingua italiana.
 
 | Task | Modello  | μ-F1 | m-F1 | Carburacy |  
