@@ -2,13 +2,21 @@ import logging
 import os
 import random
 import sys
+import json
+import math
+import torch
 from dataclasses import dataclass, field
 from typing import Optional
+import wandb
 
 import datasets
 import evaluate
 import numpy as np
 from datasets import load_dataset, load_from_disk
+from sklearn.metrics import precision_recall_fscore_support, accuracy_score, f1_score
+from codecarbon import EmissionsTracker
+from lsg_converter import LSGConverter
+
 
 import transformers
 from transformers import (
@@ -27,9 +35,10 @@ from transformers import (
     MBartTokenizerFast,
     MBart50Tokenizer,
     MBart50TokenizerFast,
+    get_scheduler,
 )
-from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version
+from torch.utils.data import DataLoader
 from transformers.utils.versions import require_version
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -39,15 +48,13 @@ require_version("datasets>=1.8.0", "To fix: pip install -r requirements.txt")
 
 logger = logging.getLogger(__name__)
 
-# A list of all multilingual tokenizer which require lang attribute.
-# TODO: check if the other models such as MT5 need lang attribute like MBart
-MULTILINGUAL_TOKENIZERS = [MBartTokenizer, MBartTokenizerFast, MBart50Tokenizer, MBart50TokenizerFast]
 
 # TODO: specify the correct names of input/output columns
 task_name_mapping = {
     "ruling_classification": ("full_text", None, "ruling_type"),
-    "judgment_classification": ("full_text", None, "judgement_type")
+    "judgment_classification": ("full_text", None, "judgment_type")
 }
+lsg_architecture = {"facebook/mbart-large-50": "MBartForSequenceClassification"}
 
 
 @dataclass
@@ -67,20 +74,12 @@ class DataTrainingArguments:
     dataset_name_local: Optional[str] = field(
         default=None, metadata={"help": "The name of the local dataset to use."}
     )
-    dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
-    )
-    max_seq_length: int = field(
-        default=4096,
-        metadata={
-            "help": (
-                "The maximum total input sequence length after tokenization. Sequences longer "
-                "than this will be truncated, sequences shorter will be padded."
-            )
-        },
-    )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached preprocessed datasets or not."}
+    )
+    preprocessing_num_workers: Optional[int] = field(
+        default=None,
+        metadata={"help": "The number of processes to use for the preprocessing."},
     )
     pad_to_max_length: bool = field(
         default=True,
@@ -90,6 +89,9 @@ class DataTrainingArguments:
                 "If False, will pad the samples dynamically when batching to the maximum length in the batch."
             )
         },
+    )
+    source_prefix: Optional[str] = field(
+        default="", metadata={"help": "A prefix to add before every source text (useful for T5 models)."}
     )
     max_train_samples: Optional[int] = field(
         default=None,
@@ -125,6 +127,25 @@ class DataTrainingArguments:
         default=None, metadata={"help": "A csv or a json file containing the validation data."}
     )
     test_file: Optional[str] = field(default=None, metadata={"help": "A csv or a json file containing the test data."})
+    debug_mode: bool = field(default=False, metadata={"help": "If debug mode."})
+    max_seq_length: Optional[int] = field(
+        default=1024,
+        metadata={
+            "help": (
+                "The maximum total input sequence length after tokenization. Sequences longer "
+                "than this will be truncated, sequences shorter will be padded."
+            )
+        },
+    )
+
+    logging : Optional[str] = field(
+        default="disabled",
+        metadata={
+            "help": (
+                "Set 'disabled' to disable wandb logging, or else select logging 'online' or 'offline'"
+            )
+        },
+    )    
 
     def __post_init__(self):
         if self.task_name is not None:
@@ -184,6 +205,34 @@ class ModelArguments:
         default=False,
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
+    resize_position_embeddings: Optional[bool] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Whether to automatically resize the position embeddings if `max_source_length` exceeds "
+                "the model's position embeddings."
+            )
+        },
+    )
+    lsg: bool = field(
+        default=False,
+        metadata={"help": "Adopt LSG Attention"},
+    )
+
+
+
+def get_carburacy(score, emission_train, emission_test, alpha=10, beta_train=1, beta_test=100):
+    score = score + sys.float_info.epsilon
+    carburacy_train = None
+    if emission_train is not None:
+        carburacy_train = math.exp(math.log(score/100, alpha)) / (1 + emission_train * beta_train)
+    carburacy_test = None
+    if emission_test is not None:
+        carburacy_test = math.exp(math.log(score/100, alpha)) / (1 + emission_test * beta_test)
+    carburacy = None
+    if carburacy_train is not None and carburacy_test is not None:
+        carburacy = (2 * carburacy_train * carburacy_test) / (carburacy_train + carburacy_test)
+    return carburacy_train, carburacy_test, carburacy
 
 
 def main():
@@ -195,6 +244,9 @@ def main():
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    if data_args.debug_mode:
+        wandb.init(mode="disabled")
 
     # Setup logging
     logging.basicConfig(
@@ -234,23 +286,22 @@ def main():
             "`--source_prefix 'summarize: ' `"
         )
 
-    if training_args.output_dir is None:
-        training_args.output_dir = data_args.task_name + "_" + model_args.model_name_or_path
+    if training_args.do_train:
+        training_args.output_dir += "/" + data_args.task_name + "_" + \
+                                model_args.model_name_or_path.partition("/")[-1] + "_"
+        training_args.output_dir += "lsg_" if model_args.lsg else ""
+        training_args.output_dir += str(data_args.max_train_samples) + "_" + data_args.lang
+    else:
+        training_args.output_dir = model_args.model_name_or_path
+
+    # assert not os.path.exists(training_args.output_dir), "Output directory already exists"
+
+    wandb.init(mode=data_args.logging,
+                name=training_args.output_dir.split("/")[2],
+    )
 
     # Detecting last checkpoint.
     last_checkpoint = None
-    if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
-        last_checkpoint = get_last_checkpoint(training_args.output_dir)
-        if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
-            raise ValueError(
-                f"Output directory ({training_args.output_dir}) already exists and is not empty. "
-                "Use --overwrite_output_dir to overcome."
-            )
-        elif last_checkpoint is not None and training_args.resume_from_checkpoint is None:
-            logger.info(
-                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
-                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
-            )
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
@@ -262,7 +313,7 @@ def main():
         # Downloading and loading a dataset from the hub.
         raw_datasets = load_dataset(
             data_args.dataset_name,
-            data_args.dataset_config_name,
+            data_args.lang,
             cache_dir=model_args.cache_dir,
             use_auth_token=True if model_args.use_auth_token else None,
         )
@@ -305,30 +356,15 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
         trust_remote_code=True,
     )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.tokenizer_name if model_args.tokenizer_name else model_args.model_name_or_path,
-        cache_dir=model_args.cache_dir,
-        use_fast=model_args.use_fast_tokenizer,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-    )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        use_auth_token=True if model_args.use_auth_token else None,
-        ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
-        trust_remote_code=True,
-    )
 
-    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
-    # on a small vocab and want a smaller embedding size, remove this test.
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
-
+    if model_args.lsg:
+        converter = LSGConverter(max_sequence_length=data_args.max_seq_length)
+        model, tokenizer = converter.convert_from_pretrained(model_args.model_name_or_path, num_labels=num_labels,
+                                                             architecture=lsg_architecture[model_args.model_name_or_path])
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path)
+        model = AutoModelForSequenceClassification.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
+ 
     # TODO: check if also the other models need such settings
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         if isinstance(tokenizer, MBartTokenizer):
@@ -336,26 +372,53 @@ def main():
         else:
             model.config.decoder_start_token_id = tokenizer.convert_tokens_to_ids(data_args.lang)
 
-    if model.config.decoder_start_token_id is None:
+    if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
     if (
             hasattr(model.config, "max_position_embeddings")
-            and model.config.max_position_embeddings < data_args.max_source_length
+            and model.config.max_position_embeddings < data_args.max_seq_length
+            and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast))
     ):
         if model_args.resize_position_embeddings is None:
             logger.warning(
                 "Increasing the model's number of position embedding vectors from"
-                f" {model.config.max_position_embeddings} to {data_args.max_source_length}."
+                f" {model.config.max_position_embeddings} to {data_args.max_seq_length}."
             )
-            model.resize_position_embeddings(data_args.max_source_length)
+            model.resize_position_embeddings(data_args.max_seq_length)
         elif model_args.resize_position_embeddings:
-            model.resize_position_embeddings(data_args.max_source_length)
+            model.resize_position_embeddings(data_args.max_seq_length)
         else:
             raise ValueError(
-                f"`--max_source_length` is set to {data_args.max_source_length}, but the model only has"
+                f"`--max_seq_length` is set to {data_args.max_seq_length}, but the model only has"
                 f" {model.config.max_position_embeddings} position encodings. Consider either reducing"
-                f" `--max_source_length` to {model.config.max_position_embeddings} or to automatically resize the"
+                f" `--max_seq_length` to {model.config.max_position_embeddings} or to automatically resize the"
+                " model's position encodings by passing `--resize_position_embeddings`."
+            )
+
+    # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
+    # on a small vocab and want a smaller embedding size, remove this test.
+    embedding_size = model.get_input_embeddings().weight.shape[0]
+    if len(tokenizer) > embedding_size:
+        model.resize_token_embeddings(len(tokenizer))
+
+    if (
+            hasattr(model.config, "max_position_embeddings")
+            and model.config.max_position_embeddings < data_args.max_seq_length
+    ):
+        if model_args.resize_position_embeddings is None:
+            logger.warning(
+                "Increasing the model's number of position embedding vectors from"
+                f" {model.config.max_position_embeddings} to {data_args.max_seq_length}."
+            )
+            model.resize_position_embeddings(data_args.max_seq_length)
+        elif model_args.resize_position_embeddings:
+            model.resize_position_embeddings(data_args.max_seq_length)
+        else:
+            raise ValueError(
+                f"`--max_seq_length` is set to {data_args.max_seq_length}, but the model only has"
+                f" {model.config.max_position_embeddings} position encodings. Consider either reducing"
+                f" `--max_seq_length` to {model.config.max_position_embeddings} or to automatically resize the"
                 " model's position encodings by passing `--resize_position_embeddings`."
             )
 
@@ -379,23 +442,6 @@ def main():
         logger.info("There is nothing to do. Please pass `do_train`, `do_eval` and/or `do_predict`.")
         return
 
-    # TODO: check if also the other models need such settings
-    if isinstance(tokenizer, tuple(MULTILINGUAL_TOKENIZERS)):
-        assert (
-                data_args.lang is not None
-        ), f"{tokenizer.__class__.__name__} is a multilingual tokenizer which requires --lang argument"
-
-        tokenizer.src_lang = data_args.lang
-        tokenizer.tgt_lang = data_args.lang
-
-        # For multilingual translation models like mBART-50 and M2M100 we need to force the target language token
-        # as the first generated token. We ask the user to explicitly provide this as --forced_bos_token argument.
-        forced_bos_token_id = (
-            tokenizer.lang_code_to_id[
-                data_args.forced_bos_token] if data_args.forced_bos_token is not None else None
-        )
-        model.config.forced_bos_token_id = forced_bos_token_id
-
     # Padding strategy
     if data_args.pad_to_max_length:
         padding = "max_length"
@@ -413,6 +459,7 @@ def main():
         if sorted(label_name_to_id.keys()) == sorted(label_list):
             label_to_id = {i: int(label_name_to_id[label_list[i]]) for i in range(num_labels)}
         else:
+            label_to_id = {v: i for i, v in enumerate(label_list)}
             logger.warning(
                 "Your model seems to have been trained with labels, but they don't match the dataset: ",
                 f"model labels: {sorted(label_name_to_id.keys())}, dataset labels: {sorted(label_list)}."
@@ -439,46 +486,76 @@ def main():
 
     def preprocess_function(examples):
         # remove pairs where at least one record is None
-        if sentence1_key is None:
-            inputs1, targets = [], []
-            inputs2 = None
-            for i in range(len(examples[sentence1_key])):
-                if examples[sentence1_key][i] and examples[label_name][i]:
-                    inputs1.append(examples[sentence1_key][i])
-                    targets.append(examples[label_name][i])
-        else:
-            inputs1, inputs2, targets = [], [], []
-            for i in range(len(examples[sentence1_key])):
-                if examples[sentence1_key][i] and examples[sentence2_key][i] and examples[label_name][i]:
-                    inputs1.append(examples[sentence1_key][i])
-                    inputs2.append(examples[sentence2_key][i])
-                    targets.append(examples[label_name][i])
-
+        inputs1, targets = [], []
+        inputs2 = None
+        for i in range(len(examples[sentence1_key])):
+            inputs1.append(examples[sentence1_key][i])
+            targets.append(examples[label_name][i])
         inputs1 = [prefix + inp for inp in inputs1]
-
         # Tokenize the texts
         args = ((inputs1,) if inputs2 is None else (inputs1, inputs2))
         result = tokenizer(*args, padding=padding, max_length=max_seq_length, truncation=True)
-
         # Map labels to IDs
         if label_to_id is not None and label_name in examples:
             result["label"] = [(label_to_id[l] if l != -1 else -1) for l in examples[label_name]]
         return result
+
+    # Data collator will default to DataCollatorWithPadding when the tokenizer is passed to Trainer, so we change it if
+    # we already did the padding.
+    if data_args.pad_to_max_length:
+        data_collator = default_data_collator
+    elif training_args.fp16:
+        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
+    else:
+        data_collator = None    
 
     if training_args.do_train:
         train_dataset = raw_datasets["train"]
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
-        with training_args.main_process_first(desc="train dataset map pre-processing"):
-            train_dataset = train_dataset.map(
-                preprocess_function,
-                batched=True,
-                num_proc=data_args.preprocessing_num_workers,
-                remove_columns=column_names,
-                load_from_cache_file=not data_args.overwrite_cache,
-                desc="Running tokenizer on train dataset",
-            )
+        train_dataset = train_dataset.map(
+            preprocess_function,
+            batched=True,
+            num_proc=data_args.preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=False,
+            #load_from_cache_file=not data_args.overwrite_cache,
+            desc="Running tokenizer on train dataset",)
+        if data_args.task_name == "judgment_classification":
+            train_dataset = train_dataset.filter(lambda e: e["label"] not in [4, 5, 8, 9])
+        print(f"Training set size: {len(train_dataset)}")
+
+        # Optimizer
+        # Split weights in two groups, one with weight decay and the other not.
+        no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": training_args.weight_decay,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=data_collator,
+        batch_size=training_args.per_device_train_batch_size)
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=training_args.learning_rate)
+        num_update_steps_per_epoch = len(train_dataloader)
+        max_train_steps = training_args.num_train_epochs * num_update_steps_per_epoch
+
+        lr_scheduler = get_scheduler(
+            name="linear",
+            optimizer=optimizer,
+            num_warmup_steps=0,
+            num_training_steps=max_train_steps
+        )
+        optimizers = (optimizer, lr_scheduler)
+    else:
+        optimizers = (None, None)
 
     if training_args.do_eval:
         eval_dataset = raw_datasets["validation"]
@@ -509,12 +586,7 @@ def main():
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on prediction dataset",
             )
-
-    # Log a few random samples from the training set:
-    # if training_args.do_train:
-    #     for index in random.sample(range(len(train_dataset)), 3):
-    #         logger.info(f"Sample {index} of the training set: {train_dataset[index]}.")
-
+        
     # Get the metric function
     metric = evaluate.load("accuracy")
 
@@ -523,20 +595,18 @@ def main():
     def compute_metrics(p: EvalPrediction):
         preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
         preds = np.argmax(preds, axis=1)
-        result = metric.compute(predictions=preds, references=p.label_ids)
-        if len(result) > 1:
-            result["combined_score"] = np.mean(list(result.values())).item()
+        p_r_f1 = precision_recall_fscore_support(p.label_ids, preds)
+        accuracy = accuracy_score(p.label_ids, preds)
+        result = {
+            "precision": round(100 * p_r_f1[0][0], 2),
+            "recall": round(100 * p_r_f1[1][0], 2),
+            "F1": round(100 * p_r_f1[2][0], 2),
+            "accuracy": round(100 * accuracy, 2),
+            "F1_macro": round(100 * f1_score(p.label_ids, preds, average="macro"), 2),
+            "F1_micro": round(100 * f1_score(p.label_ids, preds, average="micro"), 2),
+        }
         return result
-
-    # Data collator will default to DataCollatorWithPadding when the tokenizer is passed to Trainer, so we change it if
-    # we already did the padding.
-    if data_args.pad_to_max_length:
-        data_collator = default_data_collator
-    elif training_args.fp16:
-        data_collator = DataCollatorWithPadding(tokenizer, pad_to_multiple_of=8)
-    else:
-        data_collator = None
-
+    
     # TODO: check if Seq2SeqTrainer is needed since we use seq-to-seq models like MBart
     # Initialize our Trainer
     trainer = Trainer(
@@ -547,6 +617,7 @@ def main():
         compute_metrics=compute_metrics,
         tokenizer=tokenizer,
         data_collator=data_collator,
+        optimizers=optimizers,
     )
 
     # Training
@@ -556,12 +627,19 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
+
+        train_tracker = EmissionsTracker(measure_power_secs=100000, save_to_file=False)
+        train_tracker.start()
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        train_emissions = train_tracker.stop()
+        trainer.save_model()  # Saves the tokenizer too for easy upload
+
         metrics = train_result.metrics
         max_train_samples = (
             data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
         )
         metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+        metrics["train_emissions"] = train_emissions
 
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
@@ -573,40 +651,62 @@ def main():
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
 
-        tasks = [data_args.task_name]
-        eval_datasets = [eval_dataset]
+        metrics = trainer.evaluate(eval_dataset=eval_dataset)
 
-        for eval_dataset, task in zip(eval_datasets, tasks):
-            metrics = trainer.evaluate(eval_dataset=eval_dataset)
+        max_eval_samples = (
+            data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
+        )
+        metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
 
-            max_eval_samples = (
-                data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
-            )
-            metrics["eval_samples"] = min(max_eval_samples, len(eval_dataset))
-
-            trainer.log_metrics("eval", metrics)
-            trainer.save_metrics("eval", metrics)
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
 
     if training_args.do_predict:
         logger.info("*** Predict ***")
 
-        tasks = [data_args.task_name]
-        predict_datasets = [predict_dataset]
+        # Removing the `label` columns because it contains -1 and Trainer won't like that.
+        labels = predict_dataset["label"]
+        predict_dataset = predict_dataset.remove_columns("label")
+        test_tracker = EmissionsTracker(measure_power_secs=100000, save_to_file=False)
+        test_tracker.start()
+        predictions = trainer.predict(predict_dataset, metric_key_prefix="predict")
+        test_emissions = test_tracker.stop()
 
-        for predict_dataset, task in zip(predict_datasets, tasks):
-            # Removing the `label` columns because it contains -1 and Trainer won't like that.
-            predict_dataset = predict_dataset.remove_columns("label")
-            predictions = trainer.predict(predict_dataset, metric_key_prefix="predict").predictions
-            predictions = np.argmax(predictions, axis=1)
+        if "roberta" in model_args.model_name_or_path:
+            pred = np.argmax(predictions.predictions, axis=1)
+        else:
+            pred = np.argmax(predictions.predictions[0], axis=1)
 
-            output_predict_file = os.path.join(training_args.output_dir, f"predict_results_{task}.txt")
-            if trainer.is_world_process_zero():
-                with open(output_predict_file, "w") as writer:
-                    logger.info(f"***** Predict results {task} *****")
-                    writer.write("index\tprediction\n")
-                    for index, item in enumerate(predictions):
-                        item = label_list[item]
-                        writer.write(f"{index}\t{item}\n")
+        p_r_f1 = precision_recall_fscore_support(labels, pred)
+        accuracy = accuracy_score(labels, pred)
+        result = {
+            "predict_P": round(100 * p_r_f1[0][0], 2),
+            "predict_R": round(100 * p_r_f1[1][0], 2),
+            "predict_F1": round(100 * p_r_f1[2][0], 2),
+            "predict_accuracy": round(100 * accuracy, 2),
+            "predict_F1_macro": round(100 * f1_score(labels, pred, average="macro"), 2),
+            "predict_F1_micro": round(100 * f1_score(labels, pred, average="micro"), 2),
+        }
+        result["predict_F"] = round(np.mean([result["predict_F1_macro"], result["predict_F1_micro"]]) / \
+            (1 + (np.var([result["predict_F1_macro"]/100, result["predict_F1_micro"]/100]))), 2)
+
+        result["predict_emissions"] = test_emissions
+
+        if not training_args.do_train:
+            # Open the file in read mode
+            with open(os.path.join(training_args.output_dir, "all_results.json"), 'r') as file:
+                # Load the JSON data into a dictionary
+                all_results = json.load(file)
+            train_emissions = all_results["train_emissions"]
+ 
+        train_carburacy, predict_carburacy, carburacy = get_carburacy(result["predict_F"], 
+                                                                    train_emissions, test_emissions/len(predict_dataset))
+        result["train_carburacy"] = train_carburacy
+        result["predict_carburacy"] = predict_carburacy
+        result["carburacy"] = carburacy
+
+        trainer.log_metrics("predict", result)
+        trainer.save_metrics("predict", result)
 
     kwargs = {"finetuned_from": model_args.model_name_or_path, "tasks": data_args.task_name}
     if data_args.task_name is not None:
