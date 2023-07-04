@@ -7,19 +7,19 @@ Autore: Veronika Folin
 ## Descrizione del progetto
 
 ### Obiettivo
-L'obiettivo di questo progetto è quello di addestrare e valutare dei modelli Transformer nella classificazione delle pronunce effettuate dalla Corte Costituzionale Italiana. 
+L'obiettivo di questo progetto è addestrare e valutare modelli Transformer nella classificazione delle pronunce effettuate dalla Corte Costituzionale Italiana. 
 
 ### Descrizione del dominio
 
 Una pronuncia della Corte Costituzionale è l'atto che conclude il procedimento costituzionale e consta di:
 1. *epigrafe*
 2. *testo*, ulteriormente suddiviso in:
-  - *Ritenuto in fatto* - l'input della corte che argomenta la controversia
-  - *Considerato in diritto* - la parte in cui la Corte espone le ragioni poste a fondamento della sua decisione
-3. *dispositivo* - la parte conclusiva che contiene la determinazione della Corte
+  - *Ritenuto in fatto* - l'input della corte che argomenta la controversia.
+  - *Considerato in diritto* - la parte in cui la Corte espone le ragioni poste a fondamento della sua decisione.
+3. *dispositivo* - la parte conclusiva che contiene la determinazione della Corte.
 
 Le prununce sono classificabili in due tipologie:
-- *ordinanza* - provveddimento temportaneo ed urgente per prevenire un danno immediato o proteggere un diritto. Hanno più probabilità di essere rigettate dalla Corte costituzionale.
+- *ordinanza* - provveddimento temporaneo ed urgente per prevenire un danno immediato o proteggere un diritto. Hanno più probabilità di essere rigettate dalla Corte Costituzionale.
 - *sentenza* - decisione finale e definitiva.
 
 Il *giudizio* della Corte può essere classificato in base alla ragione per cui un certo fatto le è stato presentato.
@@ -70,7 +70,7 @@ L'obiettivo di questo punto è ottenere la dicitura _giudizio_ e i _parametri co
 Per effettuare il web scraping della [pagina web](https://www.cortecostituzionale.it/actionPronuncia.do) è stato sfruttato il tool open source [Selenium](https://www.selenium.dev/), sviluppato per la web automation e il web testing.
 
 Nella cartella **_webScraping_** si trovano:
-- _**chromedriver_win32**_: all'interno di questa cartella possiamo trovare il web driver, specifico per Google Chrome, necessario per il funzionamento di Selenium
+- _**chromedriver_win32**_: all'interno di questa cartella si trova il web driver, specifico per Google Chrome, necessario per il funzionamento di Selenium.
 - _**script.py**_: script per eseguire lo scraping della pagina web e salvare il dataset aggiornato in locale. È possibile, inoltre, rieseguire lo scraping di alcune porzioni del dataset per cui sono stati riscontrati numerosi errori di caricamento, modificando opportune righe di codice. 
 - _**debug.py**_: script per verificare il risultato del processo di scraping e per risolvere manualmente specifici errori che persistono a seguito della prima fase di correzione.
 - _**executionTime.txt**_: file dove vengono riportati i tempi di esecuzione dello scraping.
@@ -94,12 +94,12 @@ Per questo punto è stato prodotto un notebook _Colab_, che si può trovare al s
 ### 3. Task di classificazione
 
 L'obiettivo è:
-1. Addestrare modelli e classificare le pronunce in *ordinanze* o *sentenze* (2 classi), poi valutarne le performance [Ruling]
-2. Addestrare modelli e classificare le pronunce in base alla *tipologia  di giudizio* (13 classi), poi valutarne le performance. [Jud
+1. Addestrare modelli e classificare le pronunce in *ordinanze* o *sentenze* (2 classi), poi valutarne le performance [Ruling Classification]
+2. Addestrare modelli e classificare le pronunce in base alla *tipologia  di giudizio* (13 classi), poi valutarne le performance. [Judgment Classification]
 
-I modelli utilizzati per effettuare i task sono stati:
-- [facebook/mbart-large-50](https://huggingface.co/facebook/mbart-large-50), ossia un modello encoder-decoder pre-addestrato su 50 lingue, in grado di processare sequenze fino a 1024 token;
-- [ccdv/lsg-xlm-roberta-base-4096](https://huggingface.co/ccdv/lsg-xlm-roberta-base-4096), ossia un multi-lingual masked language model pre-addestrato su 100 lingue e potenziato con _Local + Sparse + Global attention (LSG)_ al fine di processare fino a 4096 token.
+I modelli utilizzati per effettuare i task sono:
+- [facebook/mbart-large-50](https://huggingface.co/facebook/mbart-large-50), un modello encoder-decoder pre-addestrato su 50 lingue, in grado di processare sequenze fino a 1024 token;
+- [ccdv/lsg-xlm-roberta-base-4096](https://huggingface.co/ccdv/lsg-xlm-roberta-base-4096), un multi-lingual masked language model pre-addestrato su 100 lingue e potenziato con _Local + Sparse + Global attention (LSG)_ al fine di processare fino a 4096 token.
 
 Per valutare le performance dei modelli sui task presi in esame sono state calcolate le seguenti metriche:
 - _**μ-F1**_, media armonica dei punteggi di precision e recalll per una sintesi più equilibrata delle prestazioni del modello.
@@ -153,4 +153,4 @@ Di seguito vengono riportati i risultati ottenuti per la lingua italiana.
 |   | XLM-R-LSG | 99.57 | 98.43 | 88.06 |
 
 Entrambi i modelli riescono a risolvere con ottimi risultati i due task proposti. 
-In particolare, nel caso della classificazione bi-classe i modelli sono in grado di riconoscere le differenze che vi sono nella struttura e nel linguaggio utilizzati per le due tipologie di pronunce: ordinanza o sentenza.
+In particolare, nel caso della classificazione binaria i modelli sono in grado di riconoscere le differenze che vi sono nella struttura e nel linguaggio utilizzati per le due tipologie di pronunce: ordinanza o sentenza.
