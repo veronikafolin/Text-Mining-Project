@@ -12,9 +12,9 @@ L'obiettivo di questo progetto è addestrare e valutare modelli Transformer nell
 ### Descrizione del dominio
 
 Una pronuncia della Corte Costituzionale è l'atto che conclude il procedimento costituzionale e consta di:
-1. *epigrafe*
+1. *epigrafe*, introduzione che riporta i membri del collegio, l'udienza o la camera di consiglio, il giudice relatore e gli avvocati ascoltati dalla Corte;
 2. *testo*, ulteriormente suddiviso in:
-  - *Ritenuto in fatto* - l'input della corte che argomenta la controversia.
+  - *Ritenuto in fatto* - l'input della corte che argomenta la controversia;
   - *Considerato in diritto* - la parte in cui la Corte espone le ragioni poste a fondamento della sua decisione.
 3. *dispositivo* - la parte conclusiva che contiene la determinazione della Corte.
 
