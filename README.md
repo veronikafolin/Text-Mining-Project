@@ -121,7 +121,7 @@ python3 tasks/run_classification.py \
   --output_dir ../output \
   --task_name ruling_classification \
   --model_name_or_path facebook/mbart-large-50 \
-  --dataset_name disi-unibo-nlp/COMMA \
+  --dataset_name ../datasetName \
   --log_level error \
   --gradient_accumulation_steps 1 \
   --max_seq_length 1024 \
