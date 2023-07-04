@@ -40,16 +40,32 @@ Il sito della Corte Costituzionale riporta le seguenti tipologie di giudizio:
 
 Una pronuncia può essere corredata da una o più massime, ossia un'elaborazione in forma sintetica della motivazione e del dispositivo delle pronunce della Corte.
 
-## Task 
+### Dataset
 
-Il task si delinea nei seguenti macro-punti:
+Il dataset di partenza preso in considerazione per addestrare e testare i modelli sui task di classificazione (vedi descrizione dettagliata nella sezione "Task di classificazione") è una raccolta di 14.000 pronunce della Corte Costituzionale Italiana, dal 1956 al 2022.
+
+Ogni documento presenta le seguenti feature:
+- codice_pronuncia
+- tipologia_pronuncia
+- epigrafe
+- testo
+- dispositivo
+- testo_massima
+- titolo_massima
+- testo_integrale
+- n_mass
+- mass_len
+- text_len
+
+## Implementazione 
 
 Nel file _requirements.txt_ sono elencate le dipendenze del progetto.
 
+La realizzazione del progetto ha previsto lo svolgimento delle seguenti macro-fasi:
+
 ### 1. Web scraping
 
-L'obiettivo di questo punto è ottenere la dicitura _giudizio_ e i _parametri costituzionali_ per ogni pronuncia del dataset di partenza e, conseguentemente, popolare il dataset.
-
+L'obiettivo di questo punto è ottenere la dicitura _giudizio_ e i _parametri costituzionali_ per ogni pronuncia del dataset di partenza e, conseguentemente, popolare il dataset con i valori delle due nuove feature denominate _judgement_ e _constitutional_parameters_.
 
 Per effettuare il web scraping della [pagina web](https://www.cortecostituzionale.it/actionPronuncia.do) è stato sfruttato il tool open source [Selenium](https://www.selenium.dev/), sviluppato per la web automation e il web testing.
 
@@ -86,19 +102,19 @@ I modelli utilizzati per effettuare i task sono stati:
 - [ccdv/lsg-xlm-roberta-base-4096](https://huggingface.co/ccdv/lsg-xlm-roberta-base-4096), ossia un multi-lingual masked language model pre-addestrato su 100 lingue e potenziato con _Local + Sparse + Global attention (LSG)_ al fine di processare fino a 4096 token.
 
 Per valutare le performance dei modelli sui task presi in esame sono state calcolate le seguenti metriche:
-- **μ-F1**
-- **m-F1**, che considera il problema della classi sbilanciate, in particolare nel secondo task di classificazione
-- **Carburacy**, che prende in considerazione sia l'efficacia che l'ecosostenibilità del modello
+- _**μ-F1**_, media armonica dei punteggi di precision e recalll per una sintesi più equilibrata delle prestazioni del modello.
+- _**m-F1**_, viene calcolata utilizzando la media aritmetica (nota anche come media non ponderata) di tutti gli F1 score per classe. Questo metodo tratta tutte le classi allo stesso modo indipendentemente dai loro support values, dunque risolve problemi che si potrebbero verificare eventualmente con classi sbilanciate.
+- _**Carburacy**_, metrica che prende in considerazione sia l'efficacia che l'ecosostenibilità del modello.
 
-Nella cartella **_classification_** si trova:
-- _**run_classification.py**_: script per eseguire fine-tuning di uno specifico modello (di libreria o disponibile in locale) su un dataset (di libreria o disponibile in locale) rispetto al task di sequence classification. Il codice è un adattamento di quello reso disponibile dalla libreria _HuggingFace_ a questo [link](https://github.com/huggingface/transformers/tree/main/examples/pytorch/text-classification)
+Nella cartella **_classification_** si trova il file _**run_classification.py**_, ossia uno script per eseguire il fine-tuning di uno specifico modello (di libreria o disponibile in locale) su un dataset (di libreria o disponibile in locale) rispetto al task di sequence classification. 
+Il codice è un adattamento di quello reso disponibile dalla libreria _HuggingFace_ a questo [link](https://github.com/huggingface/transformers/tree/main/examples/pytorch/text-classification).
 
 Per lanciare lo script è possibile eseguire, ad esempio, il seguente codice:
 
 ```powershell
 python3 tasks/run_classification.py \
   --logging online \
-  --lang es \
+  --lang it \
   --do_train \
   --do_eval \
   --do_predict \
@@ -125,10 +141,14 @@ python3 tasks/run_classification.py \
   --per_device_eval_batch_size 2 \
 ```
 
-Di seguito vengono riassunti gli esperimenti effettuati per la lingua italiana e i rispettivi risultati ottenuti.
+Di seguito vengono riportati i risultati ottenuti per la lingua italiana.
 
-| Modello  |   |   |   |   |
+| Task | Modello  | μ-F1 | m-F1 | Carburacy |  
 |---|---|---|---|---|
-|   |   |   |   |   |
-|   |   |   |   |   |
-|   |   |   |   |   |
+| Ruling | MBART | 99.14 | 98.97 | 90.61 |
+|   | XLM-R-LSG | 100.0 | 100.0 | 85.56 |
+| Judgment | MBART | 89.57 | 35.88 | 75.74 |
+|   | XLM-R-LSG | 99.57 | 98.43 | 88.06 |
+
+Entrambi i modelli riescono a risolvere con ottimi risultati i due task proposti. 
+In particolare, nel caso della classificazione bi-classe i modelli sono in grado di riconoscere le differenze che vi sono nella struttura e nel linguaggio utilizzati per le due tipologie di pronunce: ordinanza o sentenza.
