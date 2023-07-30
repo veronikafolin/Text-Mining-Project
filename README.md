@@ -18,7 +18,7 @@ Una pronuncia della Corte Costituzionale è l'atto che conclude il procedimento 
   - *Considerato in diritto* - la parte in cui la Corte espone le ragioni poste a fondamento della sua decisione.
 3. *dispositivo* - la parte conclusiva che contiene la determinazione della Corte.
 
-Le prununce sono classificabili in due tipologie:
+Le pronunce sono classificabili in due tipologie:
 - *ordinanza* - provveddimento temporaneo ed urgente per prevenire un danno immediato o proteggere un diritto. Hanno più probabilità di essere rigettate dalla Corte Costituzionale.
 - *sentenza* - decisione finale e definitiva.
 
@@ -84,7 +84,7 @@ $ python script.py
 
 ### 2. Esplorazione del dataset
 
-L'obiettivo è esplorare il dataset e, in particolare, produrre delle statistiche rispetto le features prese in considerazione per i successivi task di classificazione.  
+L'obiettivo è esplorare il dataset, produrre delle statistiche rispetto le features prese in considerazione per i successivi task di classificazione ed effettuare una pulizia delle istanze.
 
 Per questo punto è stato prodotto un notebook _Colab_, che si può trovare al seguente [link](https://colab.research.google.com/drive/1AckUKN7L2ylpYRXp2kmDnA6ApP_tMJ-J?usp=sharing).
 
@@ -92,14 +92,14 @@ Per questo punto è stato prodotto un notebook _Colab_, che si può trovare al s
 
 L'obiettivo è:
 1. Addestrare modelli e classificare le pronunce in *ordinanze* o *sentenze* (2 classi), poi valutarne le performance [Ruling Classification]
-2. Addestrare modelli e classificare le pronunce in base alla *tipologia  di giudizio* (13 classi), poi valutarne le performance. [Judgment Classification]
+2. Addestrare modelli e classificare le pronunce in base alla *tipologia  di giudizio* (6 classi), poi valutarne le performance. [Judgment Classification]
 
 I modelli utilizzati per effettuare i task sono:
 - [facebook/mbart-large-50](https://huggingface.co/facebook/mbart-large-50), un modello encoder-decoder pre-addestrato su 50 lingue, in grado di processare sequenze fino a 1024 token;
 - [ccdv/lsg-xlm-roberta-base-4096](https://huggingface.co/ccdv/lsg-xlm-roberta-base-4096), un multi-lingual masked language model pre-addestrato su 100 lingue e potenziato con _Local + Sparse + Global attention (LSG)_ al fine di processare fino a 4096 token.
 
 Per valutare le performance dei modelli sui task presi in esame sono state calcolate le seguenti metriche:
-- _**μ-F1**_, media armonica dei punteggi di precision e recalll per una sintesi più equilibrata delle prestazioni del modello.
+- _**μ-F1**_, media armonica dei punteggi di precision e recall sull'intero dataset.
 - _**m-F1**_, viene calcolata utilizzando la media aritmetica (nota anche come media non ponderata) di tutti gli F1 score per classe. Questo metodo tratta tutte le classi allo stesso modo indipendentemente dai loro support values, dunque risolve problemi che si potrebbero verificare eventualmente con classi sbilanciate.
 - _**Carburacy**_, metrica che prende in considerazione sia l'efficacia che l'ecosostenibilità del modello.
 
